@@ -1,0 +1,110 @@
+# @package _global_
+
+defaults:
+  - override /data: rmbench
+  - override /model: fastwam
+  - _self_
+
+output_dir: /data/models/Motus_FastWAM/rmbench_fastwam_mem/${now:%Y-%m-%d}_${now:%H-%M-%S}
+pretrain: true
+
+batch_size: 12
+num_workers: 4
+lr_scheduler_type: "cosine"
+learning_rate: 1.0e-5
+num_epochs: 2
+max_steps: null
+log_every: 10
+save_every: 3000
+eval_every: 0
+eval_num_inference_steps: 10
+gradient_accumulation_steps: 1
+mixed_precision: "bf16"
+weight_decay: 1.0e-2
+resume: null
+
+wandb:
+  enabled: true
+  project: fast-wam-rmbench
+  name: rmbench_fastwam_mem
+  group: rmbench-memory
+  mode: online
+
+model:
+  mot_checkpoint_mixed_attn: false
+
+memory:
+  enabled: true
+  mode: "qwen_cache"
+  slide_size: 8
+  key_capacity: 16
+  topk_slide: 4
+  topk_key: 4
+  topk_anchor: 1
+  use_sliding: true
+  use_anchor: true
+  use_key: true
+  use_scratchpad: true
+  use_skill_memory: false
+  task_filter: null
+  memory_dim: null
+  num_retrieval_heads: 8
+  gate: true
+  gate_zero_init: true
+  memory_dropout: 0.1
+  qwen_path: /data/models/Qwen3-VL-4B-Instruct
+  use_qwen_cache: true
+  qwen_cache_dir: ${data.dataset_root}/qwen_cache
+  qwen_cache_stride: 8
+  raw_annotation_root: /data/datasets/RMBench/data/data
+  use_language_annotation: true
+  allow_missing_qwen_cache: false
+  use_online_qwen: false
+  freeze_qwen: true
+  qwen_lora: false
+  qwen_lora_rank: 8
+  strict_no_future: true
+  log_memory: true
+  rules:
+    enabled: true
+    Observe and Pick Up: true
+    Rearrange Blocks: true
+    Put Back Block: true
+    Swap Blocks: true
+    Swap T: true
+    Battery Try: true
+    Blocks Ranking Try: true
+    Cover Blocks: true
+    Press Button: true
+
+phase:
+  enabled: true
+  num_phases: 8
+  smooth_steps: 3
+  use_gt_phase_for_train: true
+  use_gt_phase_for_eval: false
+  loss_weight_end: 0.5
+  loss_weight_phase: 0.2
+  loss_weight_write: 0.1
+
+training:
+  lambda_vid: 0.2
+  lambda_action: 1.0
+  lambda_end: 0.5
+  lambda_phase: 0.2
+  lambda_retrieval: 0.05
+  lambda_memory_consistency: 0.05
+  lr_memory: 1.0e-4
+  lr_action_lora: 5.0e-5
+  lr_qwen_lora: 2.0e-5
+  precision: bf16
+  freeze_base: false
+  train_memory_only: false
+
+eval:
+  official_episodes: true
+  rollouts_per_task: 100
+  no_gt_phase: true
+  log_memory: true
+  save_video: true
+  save_memory_trace: true

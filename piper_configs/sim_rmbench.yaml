@@ -1,0 +1,77 @@
+# @package _global_
+
+defaults:
+  - train
+  - override /task: rmbench/fastwam_mem
+  - _self_
+
+ckpt: null
+gpu_id: 2
+
+model:
+  load_text_encoder: true
+  skip_dit_load_from_pretrain: true
+  action_dit_pretrained_path: null
+  mot_checkpoint_mixed_attn: false
+
+EVALUATION:
+  rmbench_root: /export/ra/sunxiaoquan/RMBench
+  python: /export/ra/sunxiaoquan/miniforge3/envs/RMBench/bin/python
+  policy_name: fastwam_policy
+  task_name: null
+  task_config: demo_clean
+  eval_video_log: false
+  instruction_type: unseen
+  test_num: 5
+  output_dir: ./evaluate_results/rmbench/${hydra:runtime.choices.task}/${now:%Y%m%d_%H%M%S}
+
+  # Action inference
+  action_horizon: null
+  replan_steps: 8
+  num_inference_steps: ${eval_num_inference_steps}
+  sigma_shift: null
+  text_cfg_scale: 1.0
+  negative_prompt: ""
+  rand_device: cpu
+  tiled: false
+  timing_enabled: false
+
+  # FastWAM memory mode for online RMBench rollouts.
+  # Use "noop" for fast interface smoke tests, and "qwen_online" for the
+  # memory-aware result that matches live simulator observations.
+  memory_mode: qwen_online
+
+  # Runtime inputs
+  dataset_stats_path: /data/datasets/fastwam/rmbench/dataset_stats.json
+  device: cuda
+  cuda_home: /usr/local/cuda-13.0
+  omp_num_threads: 8
+  extra_pythonpath:
+    - /export/ra/sunxiaoquan/miniforge3/envs/fastwam/lib/python3.10/site-packages
+  extra_path:
+    - /export/ra/sunxiaoquan/miniforge3/envs/fastwam/bin
+  extra_ld_library_path:
+    - /export/ra/sunxiaoquan/miniforge3/envs/fastwam/lib
+
+  tasks:
+    - observe_and_pickup
+    - put_back_block
+    - swap_T
+    - rearrange_blocks
+    - battery_try
+    - swap_blocks
+    - press_button
+    - cover_blocks
+    - blocks_ranking_try
+
+MULTIRUN:
+  enabled: false
+  gpu_ids: [2, 3]
+  max_tasks_per_gpu: 1
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: .
+  output_subdir: null

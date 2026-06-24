@@ -217,7 +217,12 @@ class FastWAMIDM(FastWAMJoint):
         action_weight = self.train_action_scheduler.training_weight(timestep_action).to(
             action_loss_per_sample.device, dtype=action_loss_per_sample.dtype
         )
-        loss_action = (action_loss_per_sample * action_weight).mean()
+        has_action_mask = self._resolve_has_action_mask(sample, batch_size=batch_size, device=action.device)
+        loss_action = self._aggregate_action_loss(
+            action_loss_per_sample=action_loss_per_sample,
+            action_weight=action_weight,
+            has_action_mask=has_action_mask,
+        )
 
         loss_total = self.loss_lambda_video * loss_video + self.loss_lambda_action * loss_action
         loss_dict = {

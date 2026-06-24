@@ -176,6 +176,14 @@ class RobotVideoDataset(torch.utils.data.Dataset):
             )  # [T_video, C, 128, 160]
             bottom = torch.cat([cam_left, cam_right], dim=-1)  # [T_video, C, 128, 320]
             video = torch.cat([cam_top, bottom], dim=-2)  # [T_video, C, 384, 320]
+        elif self.concat_multi_camera == "grid_2x2":
+            if num_cameras != 4:
+                raise ValueError(
+                    f"`concat_multi_camera='grid_2x2'` requires exactly 4 cameras, got {num_cameras}"
+                )
+            top_row = torch.cat([video[0], video[1]], dim=-1)
+            bottom_row = torch.cat([video[2], video[3]], dim=-1)
+            video = torch.cat([top_row, bottom_row], dim=-2)
         elif num_cameras > 1:
             if self.concat_multi_camera == "horizontal":
                 video = torch.cat([video[i] for i in range(num_cameras)], dim=-1)  # [T_video, C, H, num_cameras*W]
@@ -184,7 +192,7 @@ class RobotVideoDataset(torch.utils.data.Dataset):
             else:
                 raise ValueError(
                     f"Invalid concat_multi_camera: {self.concat_multi_camera}. "
-                    "Expected one of: horizontal, vertical, robotwin."
+                    "Expected one of: horizontal, vertical, robotwin, grid_2x2."
                 )
         else:
             video = video.squeeze(0)  # [T_video, C, H, W]
@@ -201,6 +209,7 @@ class RobotVideoDataset(torch.utils.data.Dataset):
         #   proprio: [num_frames, proprio_dim] # start from t0 to the last frame, aligned with video frames
         action = sample["action"] # [T-1, action_dim]
         proprio = sample["proprio"][:-1, :] # [T-1, state_dim]， to align with action
+        proprio_is_pad = sample["proprio_is_pad"][:-1]
         if video.shape[1] <= 1:
             raise ValueError(f"`video` must have at least 2 frames, got shape {tuple(video.shape)}")
         if action.shape[0] % (video.shape[1] - 1) != 0:
@@ -217,6 +226,8 @@ class RobotVideoDataset(torch.utils.data.Dataset):
 
         context, context_mask = self._get_cached_text_context(instruction)
         # NOTE: to keep consistent with wan2.2's behavior
+        context = context.clone()
+        context_mask = context_mask.clone()
         context[~context_mask] = 0.0
         context_mask = torch.ones_like(context_mask)
         
@@ -229,7 +240,8 @@ class RobotVideoDataset(torch.utils.data.Dataset):
             "context_mask": context_mask,
             "image_is_pad": image_is_pad,
             "action_is_pad": sample["action_is_pad"],
-            "proprio_is_pad": sample["proprio_is_pad"],
+            "proprio_is_pad": proprio_is_pad,
+            "has_action": True,
         }
         return data
 

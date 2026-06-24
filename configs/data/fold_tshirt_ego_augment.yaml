@@ -1,0 +1,154 @@
+# Piper real-world fold T-shirt + EgoVerse ego video augmentation.
+# Camera/layout/norm settings follow piper_configs/data/agilex_piper.yaml.
+
+dataset_root: /mnt/data/yuanmingqi/datasets/realworld_piper/fold_tshirt_20260616
+dataset_stats_path: ${data.dataset_root}/dataset_stats.json
+text_embeds_cache: ${data.dataset_root}/text_embeds_cache
+
+image_raw_shape: [3, 480, 640]
+image_shape: [3, 224, 224]
+action_dim: 14
+proprio_dim: 14
+num_output_cameras: 4
+video_size: [448, 448]
+context_len: 128
+val_set_proportion: 0.01
+
+train:
+  _target_: fastwam.datasets.mixed_train_dataset.MixedTrainDataset
+  ego_robot_ratio: 0.25
+  robot:
+    _target_: fastwam.datasets.lerobot.robot_video_dataset.RobotVideoDataset
+    dataset_dirs:
+      - ${data.dataset_root}
+    shape_meta:
+      images:
+        - key: head
+          raw_shape: ${data.image_raw_shape}
+          shape: ${data.image_shape}
+        - key: front_view
+          raw_shape: ${data.image_raw_shape}
+          shape: ${data.image_shape}
+        - key: left_wrist
+          raw_shape: ${data.image_raw_shape}
+          shape: ${data.image_shape}
+        - key: right_wrist
+          raw_shape: ${data.image_raw_shape}
+          shape: ${data.image_shape}
+      action:
+        - key: default
+          raw_shape: ${data.action_dim}
+          shape: ${data.action_dim}
+      state:
+        - key: default
+          raw_shape: ${data.proprio_dim}
+          shape: ${data.proprio_dim}
+    num_frames: 33
+    global_sample_stride: 1
+    action_video_freq_ratio: 4
+    video_size: ${data.video_size}
+    camera_key: null
+    val_set_proportion: ${data.val_set_proportion}
+    is_training_set: true
+    pretrained_norm_stats: ${data.dataset_stats_path}
+    skip_padding_as_possible: false
+    concat_multi_camera: "grid_2x2"
+    override_instruction: null
+    processor:
+      _target_: fastwam.datasets.lerobot.processors.fastwam_processor.FastWAMProcessor
+      shape_meta: ${data.train.robot.shape_meta}
+      num_obs_steps: ${data.train.robot.num_frames}
+      num_output_cameras: ${data.num_output_cameras}
+      action_output_dim: ${data.action_dim}
+      proprio_output_dim: ${data.proprio_dim}
+      action_state_transforms: null
+      use_stepwise_action_norm: false
+      norm_default_mode: min/max
+      norm_exception_mode: null
+      action_state_merger:
+        _target_: fastwam.datasets.lerobot.transforms.action_state_merger.ConcatLeftAlign
+      train_transforms:
+        - _target_: fastwam.datasets.lerobot.transforms.image.ToTensor
+        - _target_: torchvision.transforms.Resize
+          size: [224, 224]
+      val_transforms:
+        - _target_: fastwam.datasets.lerobot.transforms.image.ToTensor
+        - _target_: torchvision.transforms.Resize
+          size: [224, 224]
+    text_embedding_cache_dir: ${data.text_embeds_cache}
+    context_len: ${data.context_len}
+  ego:
+    _target_: fastwam.datasets.ego.ego_verse_video_dataset.EgoVerseVideoDataset
+    dataset_root: /mnt/data/yuanmingqi/datasets/EgoVerseData_fold_clothes
+    num_frames: 33
+    action_video_freq_ratio: 4
+    video_size: ${data.video_size}
+    action_dim: ${data.action_dim}
+    proprio_dim: ${data.proprio_dim}
+    image_key: images.front_1
+    obs_stride: 1
+    text_embedding_cache_dir: ./data/text_embeds_cache/egoverse_fold_clothes
+    context_len: ${data.context_len}
+    val_set_proportion: 0.0
+    is_training_set: true
+
+val:
+  _target_: fastwam.datasets.lerobot.robot_video_dataset.RobotVideoDataset
+  dataset_dirs:
+    - ${data.dataset_root}
+  shape_meta:
+    images:
+      - key: head
+        raw_shape: ${data.image_raw_shape}
+        shape: ${data.image_shape}
+      - key: front_view
+        raw_shape: ${data.image_raw_shape}
+        shape: ${data.image_shape}
+      - key: left_wrist
+        raw_shape: ${data.image_raw_shape}
+        shape: ${data.image_shape}
+      - key: right_wrist
+        raw_shape: ${data.image_raw_shape}
+        shape: ${data.image_shape}
+    action:
+      - key: default
+        raw_shape: ${data.action_dim}
+        shape: ${data.action_dim}
+    state:
+      - key: default
+        raw_shape: ${data.proprio_dim}
+        shape: ${data.proprio_dim}
+  num_frames: 33
+  global_sample_stride: 1
+  action_video_freq_ratio: 4
+  video_size: ${data.video_size}
+  camera_key: null
+  val_set_proportion: ${data.val_set_proportion}
+  is_training_set: false
+  pretrained_norm_stats: ${data.dataset_stats_path}
+  skip_padding_as_possible: false
+  concat_multi_camera: "grid_2x2"
+  override_instruction: null
+  processor:
+    _target_: fastwam.datasets.lerobot.processors.fastwam_processor.FastWAMProcessor
+    shape_meta: ${data.train.robot.shape_meta}
+    num_obs_steps: ${data.train.robot.num_frames}
+    num_output_cameras: ${data.num_output_cameras}
+    action_output_dim: ${data.action_dim}
+    proprio_output_dim: ${data.proprio_dim}
+    action_state_transforms: null
+    use_stepwise_action_norm: false
+    norm_default_mode: min/max
+    norm_exception_mode: null
+    action_state_merger:
+      _target_: fastwam.datasets.lerobot.transforms.action_state_merger.ConcatLeftAlign
+    train_transforms:
+      - _target_: fastwam.datasets.lerobot.transforms.image.ToTensor
+      - _target_: torchvision.transforms.Resize
+        size: [224, 224]
+    val_transforms:
+      - _target_: fastwam.datasets.lerobot.transforms.image.ToTensor
+      - _target_: torchvision.transforms.Resize
+        size: [224, 224]
+  text_embedding_cache_dir: ${data.text_embeds_cache}
+  context_len: ${data.context_len}

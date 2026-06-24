@@ -1,0 +1,30 @@
+# @package _global_
+
+defaults:
+  - override /data: fold_tshirt_ego_augment
+  - override /model: fastwam_joint
+  - _self_
+
+# Piper real-world defaults (see piper_configs/task/agilex_piper/fold_towel.yaml)
+batch_size: 8
+num_workers: 4
+
+model:
+  proprio_dim: 14
+  mot_checkpoint_mixed_attn: false
+  video_dit_config:
+    action_dim: 14
+  action_dit_config:
+    action_dim: 14
+
+lr_scheduler_type: "cosine"
+learning_rate: 1.0e-5
+num_epochs: 5
+max_steps: null
+log_every: 10
+save_every: 2000
+eval_every: 0
+
+gradient_accumulation_steps: 1
+weight_decay: 1.0e-2
+resume: null

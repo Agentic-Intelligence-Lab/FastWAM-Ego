@@ -27,6 +27,8 @@ from typing import Any
 import array
 
 import datasets
+from datasets.features import Sequence
+from datasets.features import features as _hf_features_module
 import jsonlines
 import numpy as np
 import packaging.version
@@ -36,6 +38,11 @@ from huggingface_hub import DatasetCard, DatasetCardData, HfApi
 from huggingface_hub.errors import RevisionNotFoundError
 from PIL import Image as PILImage
 from torchvision import transforms
+
+# Older LeRobot parquet files embed HuggingFace metadata with `_type: "List"`.
+# `datasets` >= 3.x only registers `Sequence` / `LargeList`.
+if "List" not in _hf_features_module._FEATURE_TYPES:
+    _hf_features_module._FEATURE_TYPES["List"] = Sequence
 
 from functools import partial
 

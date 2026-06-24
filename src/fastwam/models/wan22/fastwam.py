@@ -445,6 +445,34 @@ class FastWAM(torch.nn.Module):
         valid_sum = valid.sum(dim=1).clamp(min=1.0)
         return (video_loss_token * valid).sum(dim=1) / valid_sum
 
+    def _resolve_has_action_mask(self, sample, batch_size: int, device: torch.device) -> torch.Tensor:
+        has_action = sample.get("has_action", None)
+        if has_action is None:
+            return torch.ones(batch_size, device=device, dtype=torch.bool)
+        if isinstance(has_action, bool):
+            return torch.full((batch_size,), has_action, device=device, dtype=torch.bool)
+        if not isinstance(has_action, torch.Tensor):
+            raise TypeError(f"`sample['has_action']` must be bool or torch.Tensor, got {type(has_action)}")
+        if has_action.ndim == 0:
+            return torch.full((batch_size,), bool(has_action.item()), device=device, dtype=torch.bool)
+        if has_action.ndim == 1 and has_action.shape[0] == batch_size:
+            return has_action.to(device=device, dtype=torch.bool)
+        raise ValueError(
+            f"`sample['has_action']` must be scalar or [B], got shape {tuple(has_action.shape)} for batch={batch_size}"
+        )
+
+    def _aggregate_action_loss(
+        self,
+        action_loss_per_sample: torch.Tensor,
+        action_weight: torch.Tensor,
+        has_action_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        weighted = action_loss_per_sample * action_weight
+        action_mask = has_action_mask.to(device=weighted.device, dtype=weighted.dtype)
+        if bool(action_mask.any()):
+            return (weighted * action_mask).sum() / action_mask.sum().clamp(min=1.0)
+        return weighted.sum() * 0.0
+
     def training_loss(self, sample, tiled: bool = False):
         inputs = self.build_inputs(sample, tiled=tiled)
         input_latents = inputs["input_latents"]
@@ -558,7 +586,12 @@ class FastWAM(torch.nn.Module):
         action_weight = self.train_action_scheduler.training_weight(timestep_action).to(
             action_loss_per_sample.device, dtype=action_loss_per_sample.dtype
         )
-        loss_action = (action_loss_per_sample * action_weight).mean()
+        has_action_mask = self._resolve_has_action_mask(sample, batch_size=batch_size, device=action.device)
+        loss_action = self._aggregate_action_loss(
+            action_loss_per_sample=action_loss_per_sample,
+            action_weight=action_weight,
+            has_action_mask=has_action_mask,
+        )
 
         loss_total = self.loss_lambda_video * loss_video + self.loss_lambda_action * loss_action
         loss_dict = {

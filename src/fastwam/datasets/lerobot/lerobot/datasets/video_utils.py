@@ -13,9 +13,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import ctypes.util
 import glob
 import importlib
 import logging
+import os
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,15 +30,36 @@ import torchvision
 from datasets.features.features import register_feature
 from PIL import Image
 
+logger = logging.getLogger(__name__)
 
-def get_safe_default_codec():
-    if importlib.util.find_spec("torchcodec"):
-        return "torchcodec"
+_RESOLVED_VIDEO_BACKEND: str | None = None
+
+
+def _ffmpeg_shared_libs_available() -> bool:
+    return ctypes.util.find_library("avutil") is not None
+
+
+def get_safe_default_codec() -> str:
+    """Resolve the video decoder backend once per process."""
+    global _RESOLVED_VIDEO_BACKEND
+    if _RESOLVED_VIDEO_BACKEND is not None:
+        return _RESOLVED_VIDEO_BACKEND
+
+    env_backend = os.environ.get("LEROBOT_VIDEO_BACKEND", "").strip().lower()
+    if env_backend in {"pyav", "torchcodec"}:
+        _RESOLVED_VIDEO_BACKEND = env_backend
+        return _RESOLVED_VIDEO_BACKEND
+
+    if importlib.util.find_spec("torchcodec") and _ffmpeg_shared_libs_available():
+        _RESOLVED_VIDEO_BACKEND = "torchcodec"
     else:
-        logging.warning(
-            "'torchcodec' is not available in your platform, falling back to 'pyav' as a default decoder"
-        )
-        return "pyav"
+        _RESOLVED_VIDEO_BACKEND = "pyav"
+        if importlib.util.find_spec("torchcodec"):
+            logger.info(
+                "torchcodec is installed but FFmpeg shared libraries are unavailable; "
+                "using pyav for LeRobot video decoding."
+            )
+    return _RESOLVED_VIDEO_BACKEND
 
 
 def decode_video_frames(
@@ -65,14 +88,16 @@ def decode_video_frames(
         try:
             return decode_video_frames_torchcodec(video_path, timestamps, tolerance_s)
         except Exception as err:
-            warnings.warn(
-                f"torchcodec video decode failed ({type(err).__name__}: {err}); falling back to torchvision/pyav."
-            )
-            return decode_video_frames_torchvision(video_path, timestamps, tolerance_s, backend="pyav")
-    elif backend in ["pyav", "video_reader"]:
+            global _RESOLVED_VIDEO_BACKEND
+            if _RESOLVED_VIDEO_BACKEND != "pyav":
+                logger.info("torchcodec failed (%s); switching to pyav for video decoding.", err)
+            _RESOLVED_VIDEO_BACKEND = "pyav"
+            return decode_video_frames_pyav(video_path, timestamps, tolerance_s)
+    if backend == "pyav":
+        return decode_video_frames_pyav(video_path, timestamps, tolerance_s)
+    if backend == "video_reader":
         return decode_video_frames_torchvision(video_path, timestamps, tolerance_s, backend)
-    else:
-        raise ValueError(f"Unsupported video backend: {backend}")
+    raise ValueError(f"Unsupported video backend: {backend}")
 
 
 def decode_video_frames_torchvision(
@@ -170,6 +195,63 @@ def decode_video_frames_torchvision(
     # convert to the pytorch format which is float32 in [0,1] range (and channel first)
     closest_frames = closest_frames.type(torch.float32) / 255
 
+    assert len(timestamps) == len(closest_frames)
+    return closest_frames
+
+
+def decode_video_frames_pyav(
+    video_path: Path | str,
+    timestamps: list[float],
+    tolerance_s: float,
+    log_loaded_timestamps: bool = False,
+) -> torch.Tensor:
+    """Decode video frames with PyAV directly (no torchvision VideoReader)."""
+    video_path = str(video_path)
+    first_ts = min(timestamps)
+    last_ts = max(timestamps)
+    loaded_frames: list[torch.Tensor] = []
+    loaded_ts: list[float] = []
+
+    with av.open(video_path) as container:
+        stream = container.streams.video[0]
+        stream.thread_type = "AUTO"
+        time_base = float(stream.time_base) if stream.time_base else 1.0
+        container.seek(int(first_ts / time_base), any_frame=False, backward=True, stream=stream)
+
+        for frame in container.decode(video=0):
+            if frame.pts is None:
+                continue
+            current_ts = float(frame.pts * time_base)
+            if log_loaded_timestamps:
+                logging.info("frame loaded at timestamp=%.4f", current_ts)
+            tensor = torch.from_numpy(frame.to_ndarray(format="rgb24")).permute(2, 0, 1).contiguous()
+            loaded_frames.append(tensor)
+            loaded_ts.append(current_ts)
+            if current_ts >= last_ts:
+                break
+
+    if not loaded_frames:
+        raise ValueError(f"No frames decoded from video: {video_path}")
+
+    query_ts = torch.tensor(timestamps, dtype=torch.float32)
+    loaded_ts_tensor = torch.tensor(loaded_ts, dtype=torch.float32)
+    dist = torch.cdist(query_ts[:, None], loaded_ts_tensor[:, None], p=1)
+    min_, argmin_ = dist.min(1)
+
+    is_within_tol = min_ < tolerance_s
+    assert is_within_tol.all(), (
+        f"One or several query timestamps unexpectedly violate the tolerance ({min_[~is_within_tol]} > {tolerance_s=})."
+        "It means that the closest frame that can be loaded from the video is too far away in time."
+        "This might be due to synchronization issues with timestamps during data collection."
+        "To be safe, we advise to ignore this item during training."
+        f"\nqueried timestamps: {query_ts}"
+        f"\nloaded timestamps: {loaded_ts_tensor}"
+        f"\nvideo: {video_path}"
+        f"\nbackend: pyav"
+    )
+
+    closest_frames = torch.stack([loaded_frames[idx] for idx in argmin_])
+    closest_frames = closest_frames.type(torch.float32) / 255
     assert len(timestamps) == len(closest_frames)
     return closest_frames
 

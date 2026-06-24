@@ -13,7 +13,7 @@ import torch.distributed as dist
 from omegaconf import DictConfig, ListConfig
 from tqdm import tqdm
 
-from fastwam.datasets.lerobot.robot_video_dataset import DEFAULT_PROMPT
+from fastwam.datasets.ego.ego_verse_video_dataset import DEFAULT_PROMPT, load_ego_episodes
 from fastwam.models.wan22.helpers.loader import _load_registered_model, _resolve_configs
 from fastwam.models.wan22.wan_video_text_encoder import HuggingfaceTokenizer
 from fastwam.utils.config_resolvers import register_default_resolvers
@@ -58,7 +58,12 @@ def _to_bool(value: Any) -> bool:
 
 def _iter_dataset_nodes(node: Any, path: str = "data"):
     if isinstance(node, DictConfig):
-        if "dataset_dirs" in node and node.get("dataset_dirs") is not None:
+        has_dirs = "dataset_dirs" in node and node.get("dataset_dirs") is not None
+        has_root = "dataset_root" in node and node.get("dataset_root") is not None
+        # `dataset_root` alone may be a shared config alias (e.g. data.dataset_root);
+        # only treat it as a dataset node when the dict is an instantiable dataset entry.
+        is_dataset_entry = node.get("_target_") is not None
+        if has_dirs or (has_root and is_dataset_entry):
             yield path, node
         for key, value in node.items():
             yield from _iter_dataset_nodes(value, f"{path}.{key}")
@@ -69,25 +74,33 @@ def _iter_dataset_nodes(node: Any, path: str = "data"):
 
 def _collect_dataset_settings(data_cfg: DictConfig):
     dataset_dirs: list[str] = []
+    ego_dataset_roots: list[str] = []
     cache_dirs: list[Path] = []
     context_lens = set()
 
     for node_path, node in _iter_dataset_nodes(data_cfg, path="data"):
         raw_dirs = node.get("dataset_dirs")
-        if raw_dirs is None:
-            continue
-
+        raw_ego_root = node.get("dataset_root")
         cache_dir = node.get("text_embedding_cache_dir")
         if cache_dir is None or not str(cache_dir).strip():
-            raise ValueError(
-                f"Missing `text_embedding_cache_dir` for dataset node `{node_path}` "
-                "(this node defines `dataset_dirs`)."
-            )
+            if raw_dirs is not None or raw_ego_root is not None:
+                raise ValueError(
+                    f"Missing `text_embedding_cache_dir` for dataset node `{node_path}`."
+                )
+            continue
 
-        for ds in raw_dirs:
-            ds_str = str(ds)
-            if ds_str not in dataset_dirs:
-                dataset_dirs.append(ds_str)
+        if raw_dirs is not None:
+            for ds in raw_dirs:
+                ds_str = str(ds)
+                if ds_str not in dataset_dirs:
+                    dataset_dirs.append(ds_str)
+            logger.info("Discovered LeRobot dataset node `%s` with %d dataset_dirs.", node_path, len(raw_dirs))
+
+        if raw_ego_root is not None:
+            ego_root = str(raw_ego_root)
+            if ego_root not in ego_dataset_roots:
+                ego_dataset_roots.append(ego_root)
+            logger.info("Discovered EgoVerse dataset node `%s` at %s.", node_path, ego_root)
 
         cache_dir_path = Path(str(cache_dir)).expanduser()
         if cache_dir_path not in cache_dirs:
@@ -97,9 +110,7 @@ def _collect_dataset_settings(data_cfg: DictConfig):
         if context_len is not None:
             context_lens.add(int(context_len))
 
-        logger.info("Discovered dataset node `%s` with %d dataset_dirs.", node_path, len(raw_dirs))
-
-    return dataset_dirs, cache_dirs, context_lens
+    return dataset_dirs, ego_dataset_roots, cache_dirs, context_lens
 
 
 def _resolve_context_len(context_lens: set[int]) -> int:
@@ -111,7 +122,7 @@ def _resolve_context_len(context_lens: set[int]) -> int:
     return next(iter(context_lens))
 
 
-def _read_unique_prompts(dataset_dirs: list[str]) -> list[str]:
+def _read_unique_prompts(dataset_dirs: list[str], ego_dataset_roots: list[str] | None = None) -> list[str]:
     prompts: list[str] = []
     seen = set()
     total_task_rows = 0
@@ -136,10 +147,28 @@ def _read_unique_prompts(dataset_dirs: list[str]) -> list[str]:
                     seen.add(prompt)
                     prompts.append(prompt)
 
+    ego_dataset_roots = ego_dataset_roots or []
+    for ego_root in ego_dataset_roots:
+        episodes = load_ego_episodes(ego_root)
+        if not episodes:
+            raise FileNotFoundError(f"No EgoVerse episodes found under {ego_root}")
+        for episode in episodes:
+            task = str(
+                episode.get("task_description")
+                or episode.get("task_name")
+                or "perform a task"
+            )
+            prompt = DEFAULT_PROMPT.format(task=task)
+            total_task_rows += 1
+            if prompt not in seen:
+                seen.add(prompt)
+                prompts.append(prompt)
+
     logger.info(
-        "Loaded %d task rows from %d datasets, deduplicated to %d prompts.",
+        "Loaded %d task rows from %d LeRobot datasets and %d EgoVerse roots, deduplicated to %d prompts.",
         total_task_rows,
         len(dataset_dirs),
+        len(ego_dataset_roots),
         len(prompts),
     )
     return prompts
@@ -187,7 +216,7 @@ def main(cfg: DictConfig):
     if cfg.data is None:
         raise ValueError("`cfg.data` is required.")
 
-    dataset_dirs, cache_dirs, context_lens = _collect_dataset_settings(cfg.data)
+    dataset_dirs, ego_dataset_roots, cache_dirs, context_lens = _collect_dataset_settings(cfg.data)
     if not cache_dirs:
         raise ValueError("No `text_embedding_cache_dir` found under `cfg.data`.")
 
@@ -197,9 +226,9 @@ def main(cfg: DictConfig):
         prompts = [override_prompt]
         logger.info("Using override_instruction; skipping dataset scan and encoding exactly 1 prompt.")
     else:
-        if not dataset_dirs:
-            raise ValueError("No `dataset_dirs` found under `cfg.data`.")
-        prompts = _read_unique_prompts(dataset_dirs)
+        if not dataset_dirs and not ego_dataset_roots:
+            raise ValueError("No `dataset_dirs` or `dataset_root` found under `cfg.data`.")
+        prompts = _read_unique_prompts(dataset_dirs, ego_dataset_roots)
     if not prompts:
         logger.warning("No prompts found from tasks.jsonl; nothing to do.")
         return
